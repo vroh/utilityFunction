@@ -1,0 +1,21 @@
+Package: utilityFunction
+Title: Personal utility functions
+Version: 0.0.1
+Authors@R: 
+    person("Vincent", "Roh", , "vincent.roh@sib.swiss", role = c("aut", "cre"))
+Description: Personal helper functions for data analysis, QC, and plotting, etc...
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Imports: 
+Suggests: 
+    Seurat,
+    ggplot2,
+    dbscan,
+    concaveman,
+    FNN,
+    sf,
+    polyclip,
+    ggrepel
+Config/testthat/edition: 3
