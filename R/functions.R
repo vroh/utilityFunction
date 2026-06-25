@@ -350,3 +350,346 @@ plot_feature_with_cluster_boundaries <- function(
 
   p
 }
+
+#' Stacked ribbon plot
+#'
+#' Create a stacked bar plot connected by smooth ribbons between adjacent x-axis
+#' categories, with optional faceting and automatic shortening/wrapping of axis
+#' labels.
+#'
+#' @param data A data frame.
+#' @param x String. Column name mapped to the x-axis category.
+#' @param y String. Column name containing numeric values to stack.
+#' @param fill String. Column name used for stacked fill groups.
+#' @param facet_rows Optional character vector of column names used for facet rows.
+#' @param facet_cols Optional character vector of column names used for facet columns.
+#' @param x_levels Optional character vector giving the order of x categories.
+#' @param fill_levels Optional character vector giving the order of fill groups.
+#' @param bar_width Width of each stacked bar.
+#' @param ribbon_alpha Alpha transparency for ribbons.
+#' @param ribbon_colour Outline colour for ribbons.
+#' @param bar_colour Outline colour for bars.
+#' @param bar_linewidth Outline width for bars.
+#' @param ribbon_n Number of interpolation points used for each ribbon polygon.
+#' @param reverse_y Logical; if `TRUE`, reverse the y-axis.
+#' @param facet_scales Passed to [ggplot2::facet_grid()].
+#' @param facet_space Passed to [ggplot2::facet_grid()]. If `NULL`, inferred from
+#'   `facet_scales`.
+#' @param auto_labels Logical; if `TRUE`, attempt to shorten and wrap x labels.
+#' @param label_wrap_width Optional integer wrap width for x labels.
+#' @param label_angle Optional angle for x-axis labels.
+#' @param label_dodge Optional number of rows used to dodge x-axis labels.
+#' @param label_check_overlap Logical; passed to [ggplot2::guide_axis()].
+#'
+#' @return A ggplot object.
+#' @export
+stacked_ribbon_plot <- function(data,
+                                x,
+                                y,
+                                fill,
+                                facet_rows = NULL,
+                                facet_cols = NULL,
+                                x_levels = NULL,
+                                fill_levels = NULL,
+                                bar_width = 0.5,
+                                ribbon_alpha = 0.5,
+                                ribbon_colour = "grey60",
+                                bar_colour = "black",
+                                bar_linewidth = 0.2,
+                                ribbon_n = 200,
+                                reverse_y = TRUE,
+                                facet_scales = "fixed",
+                                facet_space = NULL,
+                                auto_labels = TRUE,
+                                label_wrap_width = NULL,
+                                label_angle = NULL,
+                                label_dodge = NULL,
+                                label_check_overlap = TRUE) {
+
+  needed <- c("ggplot2", "rlang", "tidyr")
+  ok <- vapply(needed, requireNamespace, logical(1), quietly = TRUE)
+  if (!all(ok)) {
+    stop(
+      "Missing suggested packages for `stacked_ribbon_plot()`: ",
+      paste(needed[!ok], collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  if (!is.data.frame(data)) {
+    stop("`data` must be a data.frame.", call. = FALSE)
+  }
+
+  if (!is.character(x) || length(x) != 1L) {
+    stop("`x` must be a single character string naming a column in `data`.", call. = FALSE)
+  }
+  if (!is.character(y) || length(y) != 1L) {
+    stop("`y` must be a single character string naming a column in `data`.", call. = FALSE)
+  }
+  if (!is.character(fill) || length(fill) != 1L) {
+    stop("`fill` must be a single character string naming a column in `data`.", call. = FALSE)
+  }
+
+  facet_rows <- facet_rows %||% character(0)
+  facet_cols <- facet_cols %||% character(0)
+
+  if (!is.character(facet_rows)) {
+    stop("`facet_rows` must be NULL or a character vector.", call. = FALSE)
+  }
+  if (!is.character(facet_cols)) {
+    stop("`facet_cols` must be NULL or a character vector.", call. = FALSE)
+  }
+
+  needed_cols <- unique(c(x, y, fill, facet_rows, facet_cols))
+  missing_cols <- setdiff(needed_cols, colnames(data))
+  if (length(missing_cols) > 0) {
+    stop(
+      "Missing columns in `data`: ",
+      paste(missing_cols, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  if (!is.numeric(data[[y]])) {
+    stop(sprintf("Column `%s` must be numeric.", y), call. = FALSE)
+  }
+
+  facet_vars <- c(facet_rows, facet_cols)
+
+  if (is.null(x_levels)) {
+    x_levels <- if (is.factor(data[[x]])) levels(data[[x]]) else unique(as.character(data[[x]]))
+  } else {
+    x_levels <- as.character(x_levels)
+  }
+
+  if (is.null(fill_levels)) {
+    fill_levels <- if (is.factor(data[[fill]])) levels(data[[fill]]) else unique(as.character(data[[fill]]))
+  } else {
+    fill_levels <- as.character(fill_levels)
+  }
+
+  if (is.null(facet_space)) {
+    facet_space <- if (facet_scales %in% c("free_x", "free", "free_y")) facet_scales else "fixed"
+  }
+
+  make_ribbon <- function(ymin1, ymax1, ymin2, ymax2, x1, x2, n = 200) {
+    xseq <- seq(x1, x2, length.out = n)
+    t <- (xseq - x1) / (x2 - x1)
+    s <- 3 * t^2 - 2 * t^3
+
+    y_top <- ymax1 + (ymax2 - ymax1) * s
+    y_bot <- ymin1 + (ymin2 - ymin1) * s
+
+    data.frame(
+      x = c(xseq, rev(xseq)),
+      y = c(y_top, rev(y_bot))
+    )
+  }
+
+  escape_regex <- function(z) {
+    gsub("([][{}()+*^$|\\\\?.])", "\\\\\\1", z)
+  }
+
+  wrap_one <- function(z, width) {
+    paste(base::strwrap(z, width = width), collapse = "\n")
+  }
+
+  shorten_labels <- function(lbls, data, facet_vars) {
+    out <- as.character(lbls)
+
+    if (length(facet_vars) > 0) {
+      facet_vals <- unique(unlist(lapply(facet_vars, function(v) as.character(unique(data[[v]])))))
+      facet_vals <- facet_vals[!is.na(facet_vals) & nzchar(facet_vals)]
+
+      for (tok in facet_vals[order(nchar(facet_vals), decreasing = TRUE)]) {
+        tok_esc <- escape_regex(tok)
+        out <- gsub(paste0("(^|[_ .-])", tok_esc, "($|[_ .-])"), "\\1\\2", out, perl = TRUE)
+      }
+
+      out <- gsub("^[_ .-]+|[_ .-]+$", "", out, perl = TRUE)
+      out <- gsub("[_ .-]{2,}", "_", out, perl = TRUE)
+    }
+
+    out
+  }
+
+  df0 <- dplyr::ungroup(data)
+  df0 <- dplyr::select(df0, dplyr::all_of(c(facet_vars, x, fill, y)))
+
+  df0$x_cat <- factor(df0[[x]], levels = x_levels)
+  df0$fill_cat <- factor(df0[[fill]], levels = fill_levels)
+  df0$y_val <- df0[[y]]
+
+  df0 <- dplyr::select(df0, dplyr::all_of(facet_vars), x_cat, fill_cat, y_val)
+
+  df1 <- df0 |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(c(facet_vars, "x_cat", "fill_cat")))) |>
+    dplyr::summarise(y_val = sum(y_val, na.rm = TRUE), .groups = "drop")
+
+  if (length(facet_vars) > 0) {
+    present_x <- df1 |>
+      dplyr::group_by(dplyr::across(dplyr::all_of(c(facet_vars, "x_cat")))) |>
+      dplyr::summarise(.groups = "drop")
+
+    template <- tidyr::crossing(
+      present_x,
+      fill_cat = factor(fill_levels, levels = fill_levels)
+    )
+
+    join_by <- c(facet_vars, "x_cat", "fill_cat")
+  } else {
+    present_x <- df1 |>
+      dplyr::distinct(x_cat)
+
+    template <- tidyr::crossing(
+      present_x,
+      fill_cat = factor(fill_levels, levels = fill_levels)
+    )
+
+    join_by <- c("x_cat", "fill_cat")
+  }
+
+  df2 <- dplyr::left_join(template, df1, by = join_by)
+  df2$y_val[is.na(df2$y_val)] <- 0
+
+  df2 <- df2 |>
+    dplyr::mutate(
+      x_id = match(as.character(x_cat), x_levels)
+    ) |>
+    dplyr::arrange(dplyr::across(dplyr::all_of(c(facet_vars, "x_id"))), fill_cat) |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(c(facet_vars, "x_id")))) |>
+    dplyr::mutate(
+      ymax = cumsum(y_val),
+      ymin = dplyr::lag(ymax, default = 0)
+    ) |>
+    dplyr::ungroup()
+
+  segs <- df2 |>
+    dplyr::arrange(dplyr::across(dplyr::all_of(c(facet_vars, "fill_cat", "x_id")))) |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(c(facet_vars, "fill_cat")))) |>
+    dplyr::mutate(
+      x_next = dplyr::lead(x_id),
+      ymin_next = dplyr::lead(ymin),
+      ymax_next = dplyr::lead(ymax)
+    ) |>
+    dplyr::ungroup() |>
+    dplyr::filter(!is.na(x_next))
+
+  ribbon_list <- lapply(seq_len(nrow(segs)), function(i) {
+    row_i <- segs[i, , drop = FALSE]
+
+    rib <- make_ribbon(
+      ymin1 = row_i$ymin,
+      ymax1 = row_i$ymax,
+      ymin2 = row_i$ymin_next,
+      ymax2 = row_i$ymax_next,
+      x1 = row_i$x_id + bar_width / 2,
+      x2 = row_i$x_next - bar_width / 2,
+      n = ribbon_n
+    )
+
+    rib$fill_cat <- row_i$fill_cat[1]
+    rib$seg_id <- i
+
+    if (length(facet_vars) > 0) {
+      rib[facet_vars] <- row_i[rep(1, nrow(rib)), facet_vars, drop = FALSE]
+    }
+
+    rib
+  })
+
+  ribbons <- dplyr::bind_rows(ribbon_list)
+
+  axis_labels <- x_levels
+
+  if (isTRUE(auto_labels)) {
+    axis_labels <- shorten_labels(axis_labels, data, facet_vars)
+
+    if (is.null(label_wrap_width)) {
+      max_chars <- max(nchar(axis_labels), na.rm = TRUE)
+      label_wrap_width <- if (max_chars > 18) 12 else if (max_chars > 12) 16 else NA_integer_
+    }
+
+    if (!is.na(label_wrap_width)) {
+      axis_labels <- vapply(axis_labels, wrap_one, character(1), width = label_wrap_width)
+    }
+
+    max_label_lines <- max(vapply(strsplit(axis_labels, "\n", fixed = TRUE), length, integer(1)))
+    max_label_chars <- max(nchar(gsub("\n", "", axis_labels, fixed = TRUE)), na.rm = TRUE)
+
+    if (is.null(label_angle)) {
+      label_angle <- if (max_label_lines > 1) 0 else if (max_label_chars > 16) 45 else 0
+    }
+
+    if (is.null(label_dodge)) {
+      label_dodge <- if (max_label_lines > 1) 1 else if (max_label_chars > 10) 2 else 1
+    }
+  } else {
+    if (is.null(label_angle)) label_angle <- 0
+    if (is.null(label_dodge)) label_dodge <- 1
+  }
+
+  x_guide <- ggplot2::guide_axis(
+    angle = label_angle,
+    n.dodge = label_dodge,
+    check.overlap = label_check_overlap
+  )
+
+  p <- ggplot2::ggplot() +
+    ggplot2::geom_polygon(
+      data = ribbons,
+      ggplot2::aes(x = x, y = y, group = seg_id, fill = fill_cat),
+      alpha = ribbon_alpha,
+      colour = ribbon_colour
+    ) +
+    ggplot2::geom_rect(
+      data = df2,
+      ggplot2::aes(
+        xmin = x_id - bar_width / 2,
+        xmax = x_id + bar_width / 2,
+        ymin = ymin,
+        ymax = ymax,
+        fill = fill_cat
+      ),
+      colour = bar_colour,
+      linewidth = bar_linewidth
+    ) +
+    ggplot2::scale_x_continuous(
+      breaks = seq_along(x_levels),
+      labels = axis_labels,
+      guide = x_guide
+    ) +
+    ggplot2::labs(x = NULL, y = y, fill = fill) +
+    ggplot2::theme_bw() +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(
+        hjust = if (isTRUE(label_angle > 0)) 1 else 0.5,
+        vjust = if (isTRUE(label_angle > 0)) 1 else 0.5
+      )
+    )
+
+  if (reverse_y) {
+    p <- p + ggplot2::scale_y_reverse()
+  } else {
+    p <- p + ggplot2::scale_y_continuous()
+  }
+
+  if (length(facet_rows) > 0 || length(facet_cols) > 0) {
+    row_vars <- if (length(facet_rows) > 0) ggplot2::vars(!!!rlang::syms(facet_rows)) else ggplot2::vars()
+    col_vars <- if (length(facet_cols) > 0) ggplot2::vars(!!!rlang::syms(facet_cols)) else ggplot2::vars()
+
+    p <- p + ggplot2::facet_grid(
+      rows = row_vars,
+      cols = col_vars,
+      scales = facet_scales,
+      space = facet_space
+    )
+  }
+
+  p
+}
+
+# internal helper for NULL defaulting
+`%||%` <- function(x, y) {
+  if (is.null(x)) y else x
+}

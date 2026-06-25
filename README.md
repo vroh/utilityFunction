@@ -20,3 +20,13 @@ plot_feature_with_cluster_boundaries(seurat_obj = pbmc3k.final, feature = "S100A
 ```
 
 ![plot_feature_with_cluster_boundaries](man/figures/plot_feature_with_cluster_boundaries.png)
+
+## stacked_ribbon_plot
+
+This functions plots stacked bars joined by ribbons to highlight proportion changes between groups
+
+``` r
+stacked_ribbon_plot(df, "group", "freq", "celltype", reverse_y = F)
+```
+
+![stacked_ribbon_plot](man/figures/stacked_ribbon_plot.png)
