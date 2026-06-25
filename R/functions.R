@@ -671,7 +671,7 @@ stacked_ribbon_plot <- function(data,
   if (reverse_y) {
     p <- p + ggplot2::scale_y_reverse()
   } else {
-    p <- p + ggplot2::scale_y_continuous()
+    p <- p + ggplot2::scale_y_continuous() + ggplot2::guides(fill = ggplot2::guide_legend(reverse = TRUE))
   }
 
   if (length(facet_rows) > 0 || length(facet_cols) > 0) {
@@ -685,7 +685,6 @@ stacked_ribbon_plot <- function(data,
       space = facet_space
     )
   }
-
   p
 }
 
