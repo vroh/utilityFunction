@@ -692,3 +692,254 @@ stacked_ribbon_plot <- function(data,
 `%||%` <- function(x, y) {
   if (is.null(x)) y else x
 }
+
+#' Make sample palette
+#'
+#' Create a color palette for replicate samples.
+#' The first column in group_cols defines the main color families.
+#' Subsequent columns determine the ordering of base units within each family.
+#' Replicates share their base unit’s hue and saturation, differing only in brightness.
+#'
+#' @param coldata A data frame with features.
+#' @param replicate_col String. The name of the column indicating the sample replicate number.
+#' @param group_cols Character vector. The names of the column use to harmonize the colors.
+#' @param sample_col String. The name of the column indicating the sample ids.
+#' @param saturation Numeric in (0, 1]. Saturation value.
+#' @param saturation_contrast Numeric in (0, 1]. Saturation contrast value.
+#' @param value_range Numeric vector, both in (0, 1]. Value range.
+#' @param hue_start Numeric in degrees. Hue start value.
+#' @param hue_spread Numeric in (0, 1]. Hue spread value.
+#'
+#' @return A list with sample_colors, base_colors, replicate values and metadata.
+#' @export
+make_sample_palette <- function(
+    coldata,
+    replicate_col = "replicate",
+    group_cols = NULL,
+    sample_col = NULL,
+    saturation = 0.72,
+    saturation_contrast = 0.20,
+    value_range = c(0.65, 0.95),
+    hue_start = 15,
+    hue_spread = 0.90
+) {
+
+  coldata <- as.data.frame(coldata)
+
+  if (!nrow(coldata))
+    stop("coldata must contain at least one sample.")
+
+  if (anyDuplicated(names(coldata)))
+    stop("coldata must have unique column names.")
+
+  if (length(replicate_col) != 1L ||
+      is.na(replicate_col) ||
+      !replicate_col %in% names(coldata))
+    stop("replicate_col must identify one column in coldata.")
+
+  if (!is.null(sample_col) &&
+      (length(sample_col) != 1L ||
+       is.na(sample_col) ||
+       !sample_col %in% names(coldata)))
+    stop("sample_col must identify one column in coldata.")
+
+  if (is.null(group_cols)) {
+    group_cols <- setdiff(
+      names(coldata),
+      c(replicate_col, sample_col)
+    )
+  }
+
+  if (!length(group_cols) ||
+      anyNA(group_cols) ||
+      anyDuplicated(group_cols) ||
+      !all(group_cols %in% names(coldata)))
+    stop("group_cols must identify unique metadata columns.")
+
+  if (any(group_cols %in% c(replicate_col, sample_col)))
+    stop("group_cols must exclude replicate_col and sample_col.")
+
+  valid_scalar <- function(x) {
+    is.numeric(x) && length(x) == 1L && is.finite(x)
+  }
+
+  if (!valid_scalar(saturation) ||
+      saturation <= 0 || saturation > 1)
+    stop("saturation must be in (0, 1].")
+
+  if (!valid_scalar(saturation_contrast) ||
+      saturation_contrast < 0 || saturation_contrast > 1)
+    stop("saturation_contrast must be in [0, 1].")
+
+  if (!valid_scalar(hue_start))
+    stop("hue_start must be a finite number in degrees.")
+
+  if (!valid_scalar(hue_spread) ||
+      hue_spread <= 0 || hue_spread >= 1)
+    stop("hue_spread must be in (0, 1).")
+
+  if (!is.numeric(value_range) ||
+      length(value_range) != 2L ||
+      any(!is.finite(value_range)) ||
+      any(value_range <= 0 | value_range > 1) ||
+      value_range[1] >= value_range[2])
+    stop("value_range must contain two increasing values in (0, 1].")
+
+  samples <- if (is.null(sample_col)) {
+    rownames(coldata)
+  } else {
+    as.character(coldata[[sample_col]])
+  }
+
+  if (anyNA(samples) ||
+      any(!nzchar(samples)) ||
+      anyDuplicated(samples))
+    stop("Sample IDs must be non-missing, non-empty, and unique.")
+
+  grouping <- coldata[group_cols]
+  replicate <- coldata[[replicate_col]]
+
+  if (anyNA(grouping) || anyNA(replicate))
+    stop("Grouping columns and replicate IDs must not contain NA.")
+
+
+  ordered_values <- function(x) {
+    if (is.factor(x)) {
+      levels(x)[levels(x) %in% as.character(x)]
+    } else {
+      sort(unique(x))
+    }
+  }
+
+  group_levels <- lapply(grouping, ordered_values)
+
+  codes <- Map(
+    function(x, lev) {
+      match(as.character(x), as.character(lev))
+    },
+    grouping,
+    group_levels
+  )
+
+  # Integer-coded keys avoid collisions between metadata strings.
+  key <- do.call(paste, c(codes, list(sep = ":")))
+
+  # Sort base units according to the order of group_cols.
+  ord <- do.call(order, unname(codes))
+  first <- ord[!duplicated(key[ord])]
+  group_id <- match(key, key[first])
+
+  n_groups <- length(first)
+
+
+  # The first grouping column defines the main hue families.
+  family_id <- codes[[1L]][first]
+  n_families <- length(group_levels[[1L]])
+  family_width <- 360 / n_families
+
+  group_hue <- numeric(n_groups)
+  group_saturation <- numeric(n_groups)
+
+  saturation_pair <- pmax(
+    0.05,
+    pmin(
+      1,
+      saturation + c(-1, 1) * saturation_contrast
+    )
+  )
+
+  for (family in sort(unique(family_id))) {
+    idx <- which(family_id == family)
+    n <- length(idx)
+
+    center <- hue_start + (family - 1L) * family_width
+
+    offsets <- if (n == 1L) {
+      0
+    } else {
+      seq(-0.5, 0.5, length.out = n) *
+        family_width * hue_spread
+    }
+
+    group_hue[idx] <- (center + offsets) %% 360
+
+    group_saturation[idx] <- if (n == 1L) {
+      saturation
+    } else {
+      rep(saturation_pair, length.out = n)
+    }
+  }
+
+  hue <- group_hue[group_id]
+  sample_saturation <- group_saturation[group_id]
+
+
+  replicate_levels <- ordered_values(replicate)
+
+  replicate_id <- match(
+    as.character(replicate),
+    as.character(replicate_levels)
+  )
+
+  values <- if (length(replicate_levels) == 1L) {
+    mean(value_range)
+  } else {
+    seq(
+      value_range[1],
+      value_range[2],
+      length.out = length(replicate_levels)
+    )
+  }
+
+  sample_value <- values[replicate_id]
+
+
+  group_base_colors <- grDevices::hsv(
+    h = group_hue / 360,
+    s = group_saturation,
+    v = mean(value_range)
+  )
+
+  sample_colors <- grDevices::hsv(
+    h = hue / 360,
+    s = sample_saturation,
+    v = sample_value
+  )
+
+
+  group_labels <- vapply(first, function(i) {
+    paste(
+      paste0(
+        group_cols,
+        "=",
+        vapply(
+          grouping,
+          function(x) as.character(x[i]),
+          character(1)
+        )
+      ),
+      collapse = " | "
+    )
+  }, character(1))
+
+  group_labels <- make.unique(group_labels)
+
+  metadata <- coldata
+  metadata$.group <- group_labels[group_id]
+  metadata$.hue <- hue
+  metadata$.saturation <- sample_saturation
+  metadata$.value <- sample_value
+  metadata$.base_color <- group_base_colors[group_id]
+  metadata$.color <- sample_colors
+  rownames(metadata) <- samples
+
+  list(
+    sample_colors = setNames(sample_colors, samples),
+    base_colors = setNames(group_base_colors, group_labels),
+    metadata = metadata,
+    replicate_values = setNames(
+      values,
+      as.character(replicate_levels)
+    )
+  )
+}
